@@ -1,0 +1,8 @@
+kaggle.json
+kagglehub_datasets
+
+.venv
+
+trained_models/*
+
+runs/*
