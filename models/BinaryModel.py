@@ -15,23 +15,19 @@ class BinaryModel(AbstractModel):
 
     def _init_layers(self):
         self.features = nn.Sequential(
-            nn.Conv2d(3, 64, kernel_size=3, stride=1, padding="same"),
-            nn.Conv2d(64, 64, kernel_size=3, stride=1, padding="same"),
+            nn.Conv2d(3, 16, kernel_size=3, stride=1),  # 222 x 222 x 64
+            nn.Conv2d(16, 16, kernel_size=3, stride=1),  # 220 x 220 x 64
             nn.ReLU(inplace=True),
-            nn.MaxPool2d(kernel_size=2, stride=2),
-            nn.Conv2d(64, 128, kernel_size=3, stride=1, padding="same"),
-            nn.Conv2d(128, 128, kernel_size=3, stride=1, padding="same"),
-            nn.ReLU(inplace=True),
-            nn.MaxPool2d(kernel_size=2, stride=2),
-            nn.Conv2d(128, 256, kernel_size=3, stride=1, padding="same"),
-            nn.Conv2d(256, 256, kernel_size=3, stride=1, padding="same"),
+            nn.MaxPool2d(kernel_size=2, stride=2),  # 110 x 110 x 64
+            nn.Conv2d(16, 32, kernel_size=3, stride=1),  # 108 x 108 x 128
+            nn.Conv2d(32, 32, kernel_size=3, stride=1),  # 106 x 106 x 128
             nn.ReLU(),
         )
         self.maxpool = nn.Sequential(
-            nn.MaxPool2d(kernel_size=2, stride=2),
+            nn.MaxPool2d(kernel_size=2, stride=2),  # 53 x 53 x 128
         )
         self.classifer = nn.Sequential(
-            nn.Linear(256 * 28 * 28, 100),
+            nn.Linear(53 * 53 * 32, 100),
             nn.ReLU(inplace=True),
             nn.Linear(100, 10),
             nn.ReLU(inplace=True),
@@ -49,7 +45,7 @@ class BinaryModel(AbstractModel):
         return nn.BCEWithLogitsLoss()
 
     def _create_optimizer(self):
-        return optim.SGD(self.parameters(), lr=1e-3, momentum=0.9, dampening=0.1)
+        return optim.SGD(self.parameters(), lr=1e-2, momentum=0.9, dampening=0.1)
 
     def _create_loaders(self):
         # Datasets
@@ -70,11 +66,13 @@ class BinaryModel(AbstractModel):
         train_dataset, val_dataset = torch.utils.data.random_split(
             combined_dataset, [train_size, val_size])
 
-        # Assign transformers to datasets
+        # Initialize transforms
         train_transform = transforms.Compose([
             transforms.Resize((224, 224)),
             transforms.RandomHorizontalFlip(p=0.5),
-            transforms.RandomRotation(degrees=180),
+            transforms.RandomRotation(degrees=10),
+            transforms.ColorJitter(
+                brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1),
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[
                                  0.229, 0.224, 0.225]),
@@ -86,6 +84,11 @@ class BinaryModel(AbstractModel):
                                  0.229, 0.224, 0.225]),
         ])
 
+        # Save in attribute
+        self.train_transform = train_transform
+        self.val_transform = val_transform
+
+        # Assign transforms
         train_dataset = TransformTorchDataset(
             train_dataset, transform=train_transform)
         val_dataset = TransformTorchDataset(
@@ -95,8 +98,8 @@ class BinaryModel(AbstractModel):
         print(f'Validation set has {len(val_dataset)} instances')
 
         # Loaders
-        train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
-        val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False)
+        train_loader = DataLoader(train_dataset, batch_size=64, shuffle=True)
+        val_loader = DataLoader(val_dataset, batch_size=64, shuffle=False)
         return train_loader, val_loader
 
     def _train_one_epoch(self, train_loader: DataLoader, loss_fn: nn.BCEWithLogitsLoss,
@@ -134,15 +137,13 @@ class BinaryModel(AbstractModel):
                 predicted = (torch.sigmoid(outputs) > 0.5).float()
                 correct_predictions += (predicted == labels).sum().item()
 
-        # Compute average loss and accuracy
-        avg_batch_loss = total_loss / len(train_loader)
+        # Compute accuracy
         accuracy = correct_predictions / total_samples
 
         # Summary
-        summary = {"avg_batch_loss": avg_batch_loss,
-                   "total_loss": total_loss, "accuracy": accuracy}
+        summary = {"loss": total_loss, "accuracy": accuracy}
 
-        return summary
+        return summary, inputs, labels
 
     def _validate_one_epoch(self, val_loader: DataLoader, loss_fn: nn.BCEWithLogitsLoss, device: torch.device):
         total_vloss = 0.0
@@ -161,17 +162,17 @@ class BinaryModel(AbstractModel):
                 # Make predictions for this batch
                 voutputs = self(vinputs)
 
-                # Compute the loss and accuracy
+                # Compute the loss
                 vloss = loss_fn(voutputs, vlabels)
                 total_vloss += vloss.item()
                 total_samples += vlabels.size(0)
+
+                # Compute accuracy
                 predicted = (torch.sigmoid(voutputs) > 0.5).float()
                 correct_predictions += (predicted == vlabels).sum().item()
-        avg_batch_vloss = total_vloss / len(val_loader)
         accuracy = correct_predictions / total_samples
 
-        summary = {"avg_batch_loss": avg_batch_vloss,
-                   "total_loss": total_vloss, "accuracy": accuracy}
+        summary = {"loss": total_vloss, "accuracy": accuracy}
 
         return summary, vinputs, vlabels
 

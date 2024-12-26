@@ -29,70 +29,10 @@ class AbstractModel(ABC, nn.Module):
 
     @abstractmethod
     def _init_layers(self):
-        """
-        self.conv1_1 = nn.Conv2d(3, 64, kernel_size=3, padding=1)\n
-        self.conv1_2 = nn.Conv2d(64, 64, kernel_size=3, padding=1)\n
-        self.pool1 = nn.MaxPool2d(kernel_size=2, stride=2)\n
-        \n
-        self.conv2_1 = nn.Conv2d(64, 128, kernel_size=3, padding=1)\n
-        self.conv2_2 = nn.Conv2d(128, 128, kernel_size=3, padding=1)\n
-        self.pool2 = nn.MaxPool2d(kernel_size=2, stride=2)\n
-        \n
-        self.conv3_1 = nn.Conv2d(128, 256, kernel_size=3, padding=1)\n
-        self.conv3_2 = nn.Conv2d(256, 256, kernel_size=3, padding=1)\n
-        self.conv3_3 = nn.Conv2d(256, 256, kernel_size=3, padding=1)\n
-        self.pool3 = nn.MaxPool2d(kernel_size=2, stride=2)\n
-        \n
-        self.conv4_1 = nn.Conv2d(256, 512, kernel_size=3, padding=1)\n
-        self.conv4_2 = nn.Conv2d(512, 512, kernel_size=3, padding=1)\n
-        self.conv4_3 = nn.Conv2d(512, 512, kernel_size=3, padding=1)\n
-        self.pool4 = nn.MaxPool2d(kernel_size=2, stride=2)\n
-        \n
-        self.conv5_1 = nn.Conv2d(512, 512, kernel_size=3, padding=1)\n
-        self.conv5_2 = nn.Conv2d(512, 512, kernel_size=3, padding=1)\n
-        self.conv5_3 = nn.Conv2d(512, 512, kernel_size=3, padding=1)\n
-        self.pool5 = nn.MaxPool2d(kernel_size=2, stride=2)\n
-        \n
-        self.fc1 = nn.Linear(512 * 7 * 7, 4096)\n
-        self.fc2 = nn.Linear(4096, 4096)\n
-        self.fc3 = nn.Linear(4096, 1000)
-        """
         pass
 
     @abstractmethod
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        x = F.relu(self.conv1_1(x))\n
-        x = F.relu(self.conv1_2(x))\n
-        x = self.pool1(x)\n
-        \n
-        x = F.relu(self.conv2_1(x))\n
-        x = F.relu(self.conv2_2(x))\n
-        x = self.pool2(x)\n
-        \n
-        x = F.relu(self.conv3_1(x))\n
-        x = F.relu(self.conv3_2(x))\n
-        x = F.relu(self.conv3_3(x))\n
-        x = self.pool3(x)\n
-        \n
-        x = F.relu(self.conv4_1(x))\n
-        x = F.relu(self.conv4_2(x))\n
-        x = F.relu(self.conv4_3(x))\n
-        x = self.pool4(x)\n
-        \n
-        x = F.relu(self.conv5_1(x))\n
-        x = F.relu(self.conv5_2(x))\n
-        x = F.relu(self.conv5_3(x))\n
-        x = self.pool5(x)\n
-        \n
-        x = torch.flatten(x, 1)\n
-        x = F.relu(self.fc1(x))\n
-        x = F.dropout(x, 0.5, self.training)\n
-        x = F.relu(self.fc2(x))\n
-        x = F.dropout(x, 0.5, self.training)\n
-        x = self.fc3(x)\n
-        return x
-        """
         pass
 
     @abstractmethod
@@ -116,7 +56,10 @@ class AbstractModel(ABC, nn.Module):
     def _train_one_epoch(self, train_loader: DataLoader, loss_fn: _Loss,
                          optimizer: torch.optim.Optimizer, device: torch.device) -> Dict[str, float | int]:
         """
-        return train_summary
+        inputs should be a tensor of shape [B, C, H, W]\n
+        labels should be a tensor of shape [B]\n
+
+        return train_summary, inputs, labels
         """
         pass
 
@@ -126,7 +69,7 @@ class AbstractModel(ABC, nn.Module):
         vinputs should be a tensor of shape [B, C, H, W]\n
         vlabels should be a tensor of shape [B]\n
 
-        return val_summary, vinputs, vlabels 
+        return val_summary, vinputs, vlabels
         """
         pass
 
@@ -134,12 +77,13 @@ class AbstractModel(ABC, nn.Module):
     def _get_target_layer(self):
         pass
 
-    def train_and_save_model(self, epochs: int = 1000, patience: int = 20):
+    def train_and_save_model(self, epochs: int = 1000, patience: int = 30):
         if epochs < 1:
             raise ValueError("epochs must be greater than 0")
 
         # Get device
         device = self.device
+        print(f"Using device: {device}")
 
         # Loss function and optimizer
         loss_fn = self._create_loss_fn()
@@ -175,9 +119,25 @@ class AbstractModel(ABC, nn.Module):
         timestamp = datetime.now(sg_timezone).strftime('%Y%m%d_%H%M%S')
         writer = SummaryWriter(f'runs/{self.name}/{timestamp}')
 
-        # Write architecture
+        # Write model architecture
         random_image = torch.randn(1, 3, 224, 224).to(device)
         writer.add_graph(self, random_image)
+
+        # Convert random_image to random_image_pil
+        random_image_pil = transforms.ToPILImage()(random_image.squeeze(0))
+
+        # Write transform architecture
+        train_transform = self.train_transform
+        random_image_transformed = train_transform(
+            random_image_pil).unsqueeze(0).to(device)
+        writer.add_graph(self, random_image_transformed)
+
+        val_transform = self.val_transform
+        random_image_transformed = val_transform(
+            random_image_pil).unsqueeze(0).to(device)
+        writer.add_graph(self, random_image_transformed)
+
+        # Flush
         writer.flush()
 
         # Create folder to save model
@@ -186,7 +146,7 @@ class AbstractModel(ABC, nn.Module):
         if not os.path.exists(saved_model_folder_path):
             os.makedirs(saved_model_folder_path)
 
-        highest_avg_vloss = 1_000_000.
+        highest_vloss = 1_000_000.
         highest_val_accuracy = 0.
         epochs_since_best = 0
         for epoch_idx in range(epochs):
@@ -194,7 +154,7 @@ class AbstractModel(ABC, nn.Module):
 
             # Train
             self.train()
-            train_summary = self._train_one_epoch(
+            train_summary, inputs, labels = self._train_one_epoch(
                 train_loader, loss_fn, optimizer, device)
 
             # Validate
@@ -208,20 +168,24 @@ class AbstractModel(ABC, nn.Module):
 
             # Write activation map
             self.eval()
+            target_layer = self._get_target_layer()
             self._write_activation_map(
-                writer, target_layer=self._get_target_layer(), inputs=vinputs, labels=vlabels, epoch_idx=epoch_idx)
+                writer, target_layer=target_layer, inputs=inputs, labels=labels, epoch_idx=epoch_idx, tag="Training activation maps")
+            self.eval()
+            self._write_activation_map(
+                writer, target_layer=target_layer, inputs=vinputs, labels=vlabels, epoch_idx=epoch_idx, tag="Validation activation maps")
 
             # Track best performance, and save the model's state
-            avg_vloss = val_summary['avg_batch_loss']
-            if avg_vloss < highest_avg_vloss:
-                highest_avg_vloss = avg_vloss
+            vloss = val_summary['loss']
+            if vloss < highest_vloss:
+                highest_vloss = vloss
             validation_accuracy = val_summary['accuracy']
             if validation_accuracy > highest_val_accuracy:
                 highest_val_accuracy = validation_accuracy
                 epochs_since_best = 0
-                model_path = os.path.join(
-                    saved_model_folder_path, f"{epoch_idx + 1}.pth")
-                torch.save(self.state_dict(), model_path)
+                # model_path = os.path.join(
+                # saved_model_folder_path, f"{epoch_idx + 1}.pth")
+                # torch.save(self.state_dict(), model_path)
             else:
                 epochs_since_best += 1
 
@@ -243,7 +207,7 @@ class AbstractModel(ABC, nn.Module):
             writer.add_scalar(f"Val/{key}", value, epoch_idx + 1)
         writer.flush()
 
-    def _write_activation_map(self, writer: SummaryWriter, target_layer, inputs, labels, epoch_idx):
+    def _write_activation_map(self, writer: SummaryWriter, target_layer, inputs, labels, epoch_idx, tag):
         # Create GradCAM object
         cam = GradCAM(model=self, target_layers=[target_layer])
 
@@ -284,5 +248,5 @@ class AbstractModel(ABC, nn.Module):
 
             # Log to TensorBoard
             writer.add_image(
-                f"Activation Map/Label_{labels.item()}_Index_{i}", cam_image, epoch_idx)
+                f"{tag}/Label_{labels.item()}_Index_{i}", cam_image, epoch_idx)
         writer.flush()
