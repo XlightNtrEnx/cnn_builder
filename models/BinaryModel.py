@@ -15,23 +15,57 @@ class BinaryModel(AbstractModel):
 
     def _init_layers(self):
         self.features = nn.Sequential(
-            nn.Conv2d(3, 16, kernel_size=3, stride=1),  # 222 x 222 x 64
-            nn.Conv2d(16, 16, kernel_size=3, stride=1),  # 220 x 220 x 64
-            nn.ReLU(inplace=True),
-            nn.MaxPool2d(kernel_size=2, stride=2),  # 110 x 110 x 64
-            nn.Conv2d(16, 32, kernel_size=3, stride=1),  # 108 x 108 x 128
-            nn.Conv2d(32, 32, kernel_size=3, stride=1),  # 106 x 106 x 128
+            nn.Conv2d(3, 32, kernel_size=3, stride=1,
+                      padding="same"),  # 224 x 224 x 32
+            nn.BatchNorm2d(32),
+            nn.ReLU(),
+            nn.MaxPool2d(kernel_size=2, stride=2),  # 112 x 112 x 32
+            nn.Dropout(0.1),
+
+            nn.Conv2d(32, 64, kernel_size=3, stride=1,
+                      padding="same"),  # 112 x 112 x 64
+            nn.BatchNorm2d(64),
+            nn.ReLU(),
+            nn.MaxPool2d(kernel_size=2, stride=2),  # 56 x 56 x 64
+            nn.Dropout(0.1),
+
+            nn.Conv2d(64, 128, kernel_size=3, stride=1,
+                      padding="same"),  # 56 x 56 x 128
+            nn.BatchNorm2d(128),
+            nn.ReLU(),
+            nn.MaxPool2d(kernel_size=2, stride=2),  # 28 x 28 x 128
+            nn.Dropout(0.1),
+
+            nn.Conv2d(128, 256, kernel_size=3, stride=1,
+                      padding="same"),  # 28 x 28 x 256
+            nn.BatchNorm2d(256),
+            nn.ReLU(),
+            nn.MaxPool2d(kernel_size=2, stride=2),  # 14 x 14 x 256
+            nn.Dropout(0.1),
+
+            nn.Conv2d(256, 512, kernel_size=3, stride=1,
+                      padding="same"),  # 14 x 14 x 512
+            nn.BatchNorm2d(512),
             nn.ReLU(),
         )
         self.maxpool = nn.Sequential(
-            nn.MaxPool2d(kernel_size=2, stride=2),  # 53 x 53 x 128
+            nn.MaxPool2d(kernel_size=2, stride=2),  # 7 x 7 x 512
+            nn.Dropout(0.1),
         )
         self.classifer = nn.Sequential(
-            nn.Linear(53 * 53 * 32, 100),
-            nn.ReLU(inplace=True),
-            nn.Linear(100, 10),
-            nn.ReLU(inplace=True),
-            nn.Linear(10, 1)  # Output layer
+            nn.Linear(7 * 7 * 512, 1024),
+            nn.ReLU(),
+            nn.Dropout(p=0.5),  # Dropout layer
+
+            nn.Linear(1024, 512),
+            nn.ReLU(),
+            nn.Dropout(p=0.5),  # Dropout layer
+
+            nn.Linear(512, 256),
+            nn.ReLU(),
+            nn.Dropout(p=0.5),  # Dropout layer
+
+            nn.Linear(256, 1)  # Output layer
         )
 
     def forward(self, x):
@@ -45,10 +79,9 @@ class BinaryModel(AbstractModel):
         return nn.BCEWithLogitsLoss()
 
     def _create_optimizer(self):
-        return optim.SGD(self.parameters(), lr=1e-2, momentum=0.9, dampening=0.1)
+        return optim.SGD(self.parameters(), lr=1e-3, momentum=0.9, dampening=0.1, weight_decay=1e-4)
 
-    def _create_loaders(self):
-        # Datasets
+    def _create_dataset(self):
         cat_dataset = KagglehubDataset(
             kagglehub_url="crawford/cat-dataset",
             label=0,
@@ -57,16 +90,11 @@ class BinaryModel(AbstractModel):
             kagglehub_url="jessicali9530/stanford-dogs-dataset",
             label=1,
             max_size=512)
-
-        # Merge datasets and split into training and validation
-        combined_dataset = ConcatDataset(
+        dataset = ConcatDataset(
             [cat_dataset, dog_dataset])
-        train_size = 0.7
-        val_size = 0.3
-        train_dataset, val_dataset = torch.utils.data.random_split(
-            combined_dataset, [train_size, val_size])
+        return dataset
 
-        # Initialize transforms
+    def _create_transforms(self):
         train_transform = transforms.Compose([
             transforms.Resize((224, 224)),
             transforms.RandomHorizontalFlip(p=0.5),
@@ -83,24 +111,7 @@ class BinaryModel(AbstractModel):
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[
                                  0.229, 0.224, 0.225]),
         ])
-
-        # Save in attribute
-        self.train_transform = train_transform
-        self.val_transform = val_transform
-
-        # Assign transforms
-        train_dataset = TransformTorchDataset(
-            train_dataset, transform=train_transform)
-        val_dataset = TransformTorchDataset(
-            val_dataset, transform=val_transform)
-
-        print(f'Training set has {len(train_dataset)} instances')
-        print(f'Validation set has {len(val_dataset)} instances')
-
-        # Loaders
-        train_loader = DataLoader(train_dataset, batch_size=64, shuffle=True)
-        val_loader = DataLoader(val_dataset, batch_size=64, shuffle=False)
-        return train_loader, val_loader
+        return train_transform, val_transform
 
     def _train_one_epoch(self, train_loader: DataLoader, loss_fn: nn.BCEWithLogitsLoss,
                          optimizer: torch.optim.Optimizer, device: torch.device):
@@ -141,7 +152,8 @@ class BinaryModel(AbstractModel):
         accuracy = correct_predictions / total_samples
 
         # Summary
-        summary = {"loss": total_loss, "accuracy": accuracy}
+        summary = {"loss": total_loss, "avg_loss_per_batch": total_loss /
+                   total_samples, "accuracy": accuracy}
 
         return summary, inputs, labels
 
@@ -172,7 +184,8 @@ class BinaryModel(AbstractModel):
                 correct_predictions += (predicted == vlabels).sum().item()
         accuracy = correct_predictions / total_samples
 
-        summary = {"loss": total_vloss, "accuracy": accuracy}
+        summary = {"loss": total_vloss, "avg_loss_per_batch": total_vloss /
+                   total_samples, "accuracy": accuracy}
 
         return summary, vinputs, vlabels
 

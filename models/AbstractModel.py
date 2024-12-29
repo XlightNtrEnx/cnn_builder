@@ -15,6 +15,9 @@ from torchvision.transforms import Normalize
 from pytorch_grad_cam.utils.image import show_cam_on_image
 from pytorch_grad_cam.utils.model_targets import ClassifierOutputTarget
 import pytz
+from torchvision import transforms
+
+from dataset import KagglehubDataset, TransformTorchDataset
 
 
 class AbstractModel(ABC, nn.Module):
@@ -22,8 +25,6 @@ class AbstractModel(ABC, nn.Module):
         super(AbstractModel, self).__init__()
         self.name = name
         self._init_layers()
-        # print("Model initialized with parameters: ",
-        #       [x for x in self.modules()])
         self.device = torch.device("cuda")
         self.to(self.device)
 
@@ -44,13 +45,43 @@ class AbstractModel(ABC, nn.Module):
         pass
 
     @abstractmethod
-    def _create_loaders(self) -> tuple[DataLoader, DataLoader]:
+    def _create_dataset(self) -> TorchDataset:
+        pass
+
+    @abstractmethod
+    def _create_transforms(self) -> Tuple[transforms.Compose, transforms.Compose]:
         '''
-        train_loader = DataLoader(...)\n
-        val_loader = DataLoader(...)\n
-        return (train_loader, val_loader)
+        train_transform = transforms.Compose([
+          ...
+          ])
+        val_transform = transforms.Compose([
+          ...
+        ])
+        return (train_transform, val_transform)
         '''
         pass
+
+    def _create_loaders(self) -> tuple[DataLoader, DataLoader]:
+        dataset = self._create_dataset()
+
+        train_transform, val_transform = self._create_transforms()
+
+        train_size = 0.7
+        val_size = 0.3
+        train_dataset, val_dataset = torch.utils.data.random_split(
+            dataset, [train_size, val_size])
+
+        train_dataset = TransformTorchDataset(
+            train_dataset, transform=train_transform)
+        val_dataset = TransformTorchDataset(
+            val_dataset, transform=val_transform)
+
+        print(f'Training set has {len(train_dataset)} instances')
+        print(f'Validation set has {len(val_dataset)} instances')
+
+        train_loader = DataLoader(train_dataset, batch_size=64, shuffle=True)
+        val_loader = DataLoader(val_dataset, batch_size=64, shuffle=False)
+        return train_loader, val_loader
 
     @abstractmethod
     def _train_one_epoch(self, train_loader: DataLoader, loss_fn: _Loss,
@@ -126,17 +157,6 @@ class AbstractModel(ABC, nn.Module):
         # Convert random_image to random_image_pil
         random_image_pil = transforms.ToPILImage()(random_image.squeeze(0))
 
-        # Write transform architecture
-        train_transform = self.train_transform
-        random_image_transformed = train_transform(
-            random_image_pil).unsqueeze(0).to(device)
-        writer.add_graph(self, random_image_transformed)
-
-        val_transform = self.val_transform
-        random_image_transformed = val_transform(
-            random_image_pil).unsqueeze(0).to(device)
-        writer.add_graph(self, random_image_transformed)
-
         # Flush
         writer.flush()
 
@@ -146,8 +166,7 @@ class AbstractModel(ABC, nn.Module):
         if not os.path.exists(saved_model_folder_path):
             os.makedirs(saved_model_folder_path)
 
-        highest_vloss = 1_000_000.
-        highest_val_accuracy = 0.
+        best_vloss = 1_000_000.
         epochs_since_best = 0
         for epoch_idx in range(epochs):
             print(f"Epoch {epoch_idx + 1} of {epochs}")
@@ -177,17 +196,17 @@ class AbstractModel(ABC, nn.Module):
 
             # Track best performance, and save the model's state
             vloss = val_summary['loss']
-            if vloss < highest_vloss:
-                highest_vloss = vloss
-            validation_accuracy = val_summary['accuracy']
-            if validation_accuracy > highest_val_accuracy:
-                highest_val_accuracy = validation_accuracy
-                epochs_since_best = 0
+            if vloss > best_vloss:
+                epochs_since_best += 1
                 # model_path = os.path.join(
                 # saved_model_folder_path, f"{epoch_idx + 1}.pth")
                 # torch.save(self.state_dict(), model_path)
             else:
-                epochs_since_best += 1
+                best_vloss = vloss
+                epochs_since_best = 0
+
+            print(f"Expected to stop at epoch {
+                  epoch_idx + patience - epochs_since_best + 1} if no further improvements")
 
             # Early stopping
             if epochs_since_best >= patience:
